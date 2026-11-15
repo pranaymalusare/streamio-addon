@@ -31,8 +31,16 @@ Use `TMDB_BEARER_TOKEN` instead of `TMDB_API_KEY` if you have the long
 
 - Four catalogs in Discover: **New Hindi/Marathi Movies on OTT** (Movies) and
   **New Hindi/Marathi Series on OTT** (Series).
-- The genre dropdown filters by platform.
+- In these four, the genre dropdown filters by platform.
 - Each description starts with "Streaming on: …".
+- A fifth catalog in Discover → Movies: **Must-Watch Indian Movies (Other
+  Languages)**. Movies only, no series.
+  - Languages: Tamil, Telugu, Malayalam, Kannada, Bengali, Punjabi, Gujarati,
+    Assamese, Odia and other Indian languages. Hindi and Marathi are excluded.
+  - Rating 7.5+ (TMDB score, with at least 50 votes), best first.
+  - Released in the last 10 years. The window moves forward every 1 January.
+  - Default view: Comedy, Thriller, Mystery and Crime. The genre dropdown
+    switches to one genre or to "All genres".
 
 ## Settings (environment variables)
 
@@ -40,6 +48,9 @@ Use `TMDB_BEARER_TOKEN` instead of `TMDB_API_KEY` if you have the long
 |---------------|---------|---------------------------------------|
 | `DAYS_BACK`   | 365     | How far back "recent" goes            |
 | `CATALOG_TTL` | 3600    | Seconds to cache catalog pages        |
+| `MIN_RATING`  | 7.5     | Must-watch: minimum TMDB rating       |
+| `MIN_VOTES`   | 50      | Must-watch: minimum number of votes   |
+| `YEARS_BACK`  | 10      | Must-watch: how many years back       |
 
 ## Notes
 

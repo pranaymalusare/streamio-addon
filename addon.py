@@ -3,6 +3,9 @@ Stremio catalog add-on: recently released Hindi and Marathi movies and series
 that are streaming in India on Netflix, Prime Video, ZEE5, SonyLIV and JioHotstar
 (JioCinema merged into JioHotstar in 2025).
 
+Plus one "must-watch" catalog: top-rated movies (no series) from the last
+10 years in every other Indian language (Tamil, Telugu, Malayalam, ...).
+
 Data source: TMDB "discover" API with India watch-provider filters
 (provider availability on TMDB is supplied by JustWatch).
 
@@ -57,9 +60,30 @@ KINDS = {
 }
 MAX_SEASONS = 30  # safety cap when listing episodes
 
+# ---- "Must-watch" catalog: other Indian languages, movies only -------------
+OTHER_LANGUAGES = {
+    "ta": "Tamil", "te": "Telugu", "ml": "Malayalam", "kn": "Kannada",
+    "bn": "Bengali", "pa": "Punjabi", "gu": "Gujarati", "as": "Assamese",
+    "or": "Odia", "ur": "Urdu", "ne": "Nepali", "sd": "Sindhi",
+    "ks": "Kashmiri", "sa": "Sanskrit",
+}
+MUST_WATCH_ID = "in-mustwatch"
+MIN_RATING = float(os.getenv("MIN_RATING", "7.5"))   # TMDB score out of 10
+MIN_VOTES = int(os.getenv("MIN_VOTES", "50"))        # ignore 10/10 from 3 voters
+YEARS_BACK = int(os.getenv("YEARS_BACK", "10"))      # rolling window, moves each Jan 1
+MAX_PAGES_PER_LANGUAGE = 5                           # 100 films per language at most
+
+# TMDB movie genre ids. The default view shows the preferred genres.
+GENRES = {
+    "Comedy": 35, "Thriller": 53, "Mystery": 9648, "Crime": 80, "Drama": 18,
+    "Action": 28, "Romance": 10749, "Family": 10751, "Horror": 27,
+}
+PREFERRED_GENRES = ["Comedy", "Thriller", "Mystery", "Crime"]
+ALL_GENRES = "All genres"
+
 MANIFEST = {
     "id": "community.indian-ott-recent",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "name": "Indian OTT - New Hindi & Marathi Movies & Series",
     "description": (
         "Recently released Hindi and Marathi movies and series streaming in India on "
@@ -84,6 +108,16 @@ MANIFEST = {
         }
         for type_, label in (("movie", "Movies"), ("series", "Series"))
         for code, name in LANGUAGES.items()
+    ] + [
+        {
+            "type": "movie",
+            "id": MUST_WATCH_ID,
+            "name": "Must-Watch Indian Movies (Other Languages)",
+            "extra": [
+                {"name": "genre", "options": [ALL_GENRES, *GENRES], "isRequired": False},
+                {"name": "skip", "isRequired": False},
+            ],
+        }
     ],
     "behaviorHints": {"configurable": False},
 }
@@ -147,7 +181,10 @@ def to_meta(detail: dict, type_: str) -> dict:
     imdb_id = (detail.get("external_ids") or {}).get("imdb_id") or detail.get("imdb_id")
     on = platforms_of(detail)
     overview = detail.get("overview") or ""
-    description = (f"Streaming on: {', '.join(on)}\n\n" if on else "") + overview
+    language = OTHER_LANGUAGES.get(detail.get("original_language"))
+    header = ([f"Language: {language}"] if language else []) + \
+             ([f"Streaming on: {', '.join(on)}"] if on else [])
+    description = ("\n".join(header) + "\n\n" if header else "") + overview
     # Movies use title / release_date; series use name / first_air_date.
     release = detail.get("release_date") or detail.get("first_air_date") or ""
     runtime = detail.get("runtime") or next(iter(detail.get("episode_run_time") or []), None)
@@ -231,6 +268,61 @@ async def build_catalog(type_: str, lang: str, platform: str | None, skip: int) 
     return [to_meta(d, type_) for d in details if isinstance(d, dict)]
 
 
+async def top_rated_in_language(lang: str, genre_ids: str | None) -> list[dict]:
+    """All movies in one language that pass the must-watch filters."""
+    params = {
+        "with_original_language": lang,
+        "with_origin_country": "IN",
+        "vote_average.gte": MIN_RATING,
+        "vote_count.gte": MIN_VOTES,
+        "primary_release_date.gte": f"{date.today().year - YEARS_BACK}-01-01",
+        "primary_release_date.lte": date.today().isoformat(),
+        "sort_by": "vote_average.desc",
+        "include_adult": "false",
+    }
+    if genre_ids:
+        params["with_genres"] = genre_ids
+    first = await tmdb_get("/discover/movie", CATALOG_TTL, page=1, **params)
+    last_page = min(first.get("total_pages", 1), MAX_PAGES_PER_LANGUAGE)
+    rest = await asyncio.gather(
+        *(tmdb_get("/discover/movie", CATALOG_TTL, page=p, **params)
+          for p in range(2, last_page + 1)),
+        return_exceptions=True,
+    )
+    pages = [first] + [p for p in rest if isinstance(p, dict)]
+    return [m for page in pages for m in page.get("results", [])]
+
+
+async def build_must_watch(genre: str | None, skip: int) -> list[dict]:
+    """Best-rated movies of the last YEARS_BACK years, all other Indian languages."""
+    if genre == ALL_GENRES:
+        genre_ids = None
+    elif genre:
+        genre_ids = str(GENRES[genre])
+    else:  # default view: preferred genres, | means OR
+        genre_ids = "|".join(str(GENRES[g]) for g in PREFERRED_GENRES)
+    per_language = await asyncio.gather(
+        *(top_rated_in_language(lang, genre_ids) for lang in OTHER_LANGUAGES),
+        return_exceptions=True,
+    )
+    movies = {m["id"]: m for group in per_language if isinstance(group, list)
+              for m in group
+              if m.get("original_language") in OTHER_LANGUAGES
+              and m.get("vote_average", 0) >= MIN_RATING}
+    if not movies:
+        # Every language failed: surface the error instead of an empty list.
+        for group in per_language:
+            if isinstance(group, Exception):
+                raise group
+    ranked = sorted(movies.values(),
+                    key=lambda m: (-m.get("vote_average", 0), -m.get("vote_count", 0)))
+    details = await asyncio.gather(
+        *(title_detail("movie", m["id"]) for m in ranked[skip:skip + PAGE_SIZE]),
+        return_exceptions=True,
+    )
+    return [to_meta(d, "movie") for d in details if isinstance(d, dict)]
+
+
 # --------------------------------------------------------------------------
 # Stremio routes
 # --------------------------------------------------------------------------
@@ -243,10 +335,16 @@ async def manifest():
 @app.get("/catalog/{type_}/{catalog_id}.json")
 @app.get("/catalog/{type_}/{catalog_id}/{extra}.json")
 async def catalog(type_: str, catalog_id: str, extra: str = ""):
+    args = {k: v[0] for k, v in parse_qs(extra).items()}
+    if catalog_id == MUST_WATCH_ID:
+        genre = args.get("genre")
+        if type_ != "movie" or (genre and genre != ALL_GENRES and genre not in GENRES):
+            return {"metas": []}
+        metas = await build_must_watch(genre, int(args.get("skip", 0) or 0))
+        return {"metas": metas, "cacheMaxAge": CATALOG_TTL}
     lang = catalog_id.removesuffix("-recent")
     if type_ not in KINDS or lang not in LANGUAGES:
         return {"metas": []}
-    args = {k: v[0] for k, v in parse_qs(extra).items()}
     platform = args.get("genre")
     if platform and platform not in PLATFORMS:
         return {"metas": []}
