@@ -1,6 +1,6 @@
 """
-Stremio catalog add-on: recently released Hindi and Marathi movies that are
-streaming in India on Netflix, Prime Video, ZEE5, SonyLIV and JioHotstar
+Stremio catalog add-on: recently released Hindi and Marathi movies and series
+that are streaming in India on Netflix, Prime Video, ZEE5, SonyLIV and JioHotstar
 (JioCinema merged into JioHotstar in 2025).
 
 Data source: TMDB "discover" API with India watch-provider filters
@@ -50,31 +50,39 @@ ID_TO_PLATFORM = {pid: name for name, ids in PLATFORMS.items() for pid in ids}
 
 LANGUAGES = {"hi": "Hindi", "mr": "Marathi"}
 
+# Stremio type -> how TMDB names things for that type.
+KINDS = {
+    "movie": {"path": "movie", "date": "primary_release_date"},
+    "series": {"path": "tv", "date": "first_air_date"},
+}
+MAX_SEASONS = 30  # safety cap when listing episodes
+
 MANIFEST = {
     "id": "community.indian-ott-recent",
-    "version": "1.0.0",
-    "name": "Indian OTT - New Hindi & Marathi Movies",
+    "version": "1.1.0",
+    "name": "Indian OTT - New Hindi & Marathi Movies & Series",
     "description": (
-        "Recently released Hindi and Marathi movies streaming in India on "
+        "Recently released Hindi and Marathi movies and series streaming in India on "
         "Netflix, Prime Video, ZEE5, SonyLIV and JioHotstar. "
         "Data from TMDB; streaming availability by JustWatch."
     ),
     "resources": [
         "catalog",
-        {"name": "meta", "types": ["movie"], "idPrefixes": ["tmdb:"]},
+        {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["tmdb:"]},
     ],
-    "types": ["movie"],
+    "types": ["movie", "series"],
     "idPrefixes": ["tt", "tmdb:"],
     "catalogs": [
         {
-            "type": "movie",
+            "type": type_,
             "id": f"{code}-recent",
-            "name": f"New {name} Movies on OTT",
+            "name": f"New {name} {label} on OTT",
             "extra": [
                 {"name": "genre", "options": list(PLATFORMS), "isRequired": False},
                 {"name": "skip", "isRequired": False},
             ],
         }
+        for type_, label in (("movie", "Movies"), ("series", "Series"))
         for code, name in LANGUAGES.items()
     ],
     "behaviorHints": {"configurable": False},
@@ -134,17 +142,20 @@ def platforms_of(detail: dict) -> list[str]:
     return names
 
 
-def to_meta(detail: dict) -> dict:
-    """Build a Stremio meta object from a TMDB movie detail record."""
+def to_meta(detail: dict, type_: str) -> dict:
+    """Build a Stremio meta object from a TMDB movie / TV detail record."""
     imdb_id = (detail.get("external_ids") or {}).get("imdb_id") or detail.get("imdb_id")
     on = platforms_of(detail)
     overview = detail.get("overview") or ""
     description = (f"Streaming on: {', '.join(on)}\n\n" if on else "") + overview
-    release = detail.get("release_date") or ""
+    # Movies use title / release_date; series use name / first_air_date.
+    release = detail.get("release_date") or detail.get("first_air_date") or ""
+    runtime = detail.get("runtime") or next(iter(detail.get("episode_run_time") or []), None)
     meta = {
         "id": imdb_id or f"tmdb:{detail['id']}",
-        "type": "movie",
-        "name": detail.get("title") or detail.get("original_title"),
+        "type": type_,
+        "name": (detail.get("title") or detail.get("name")
+                 or detail.get("original_title") or detail.get("original_name")),
         "description": description,
         "releaseInfo": release[:4],
         "genres": [g["name"] for g in detail.get("genres", [])],
@@ -158,36 +169,66 @@ def to_meta(detail: dict) -> dict:
         meta["background"] = f"{IMG}/w1280{detail['backdrop_path']}"
     if detail.get("vote_average"):
         meta["imdbRating"] = f"{detail['vote_average']:.1f}"
-    if detail.get("runtime"):
-        meta["runtime"] = f"{detail['runtime']} min"
+    if runtime:
+        meta["runtime"] = f"{runtime} min"
     return meta
 
 
-async def movie_detail(tmdb_id: int) -> dict:
-    return await tmdb_get(f"/movie/{tmdb_id}", DETAIL_TTL,
+async def title_detail(type_: str, tmdb_id: int) -> dict:
+    return await tmdb_get(f"/{KINDS[type_]['path']}/{tmdb_id}", DETAIL_TTL,
                           append_to_response="external_ids,watch/providers")
 
 
-async def build_catalog(lang: str, platform: str | None, skip: int) -> list[dict]:
+async def episode_list(detail: dict) -> list[dict]:
+    """Stremio 'videos' (episodes) for a series that has no IMDb id."""
+    numbers = [s["season_number"] for s in detail.get("seasons", [])
+               if s.get("season_number")][:MAX_SEASONS]          # skips specials (0)
+    seasons = await asyncio.gather(
+        *(tmdb_get(f"/tv/{detail['id']}/season/{n}", DETAIL_TTL) for n in numbers),
+        return_exceptions=True,
+    )
+    videos = []
+    for season in seasons:
+        if not isinstance(season, dict):
+            continue
+        for ep in season.get("episodes", []):
+            s_no, e_no = ep["season_number"], ep["episode_number"]
+            video = {
+                "id": f"tmdb:{detail['id']}:{s_no}:{e_no}",
+                "title": ep.get("name") or f"Episode {e_no}",
+                "season": s_no,
+                "episode": e_no,
+                "overview": ep.get("overview") or "",
+            }
+            if ep.get("air_date"):
+                video["released"] = f"{ep['air_date']}T00:00:00.000Z"
+            if ep.get("still_path"):
+                video["thumbnail"] = f"{IMG}/w300{ep['still_path']}"
+            videos.append(video)
+    return videos
+
+
+async def build_catalog(type_: str, lang: str, platform: str | None, skip: int) -> list[dict]:
+    kind = KINDS[type_]
     provider_ids = PLATFORMS[platform] if platform else list(ID_TO_PLATFORM)
     today = date.today()
     page = await tmdb_get(
-        "/discover/movie", CATALOG_TTL,
+        f"/discover/{kind['path']}", CATALOG_TTL,
         with_original_language=lang,
         watch_region=REGION,
         with_watch_providers="|".join(map(str, provider_ids)),   # | means OR
         with_watch_monetization_types="flatrate|free|ads",
-        sort_by="primary_release_date.desc",
-        **{"primary_release_date.lte": today.isoformat(),
-           "primary_release_date.gte": (today - timedelta(days=DAYS_BACK)).isoformat()},
+        sort_by=f"{kind['date']}.desc",
+        **{f"{kind['date']}.lte": today.isoformat(),
+           f"{kind['date']}.gte": (today - timedelta(days=DAYS_BACK)).isoformat()},
         include_adult="false",
         page=skip // PAGE_SIZE + 1,
     )
     details = await asyncio.gather(
-        *(movie_detail(m["id"]) for m in page.get("results", [])),
+        *(title_detail(type_, m["id"]) for m in page.get("results", [])),
         return_exceptions=True,
     )
-    return [to_meta(d) for d in details if isinstance(d, dict)]
+    return [to_meta(d, type_) for d in details if isinstance(d, dict)]
 
 
 # --------------------------------------------------------------------------
@@ -203,24 +244,27 @@ async def manifest():
 @app.get("/catalog/{type_}/{catalog_id}/{extra}.json")
 async def catalog(type_: str, catalog_id: str, extra: str = ""):
     lang = catalog_id.removesuffix("-recent")
-    if type_ != "movie" or lang not in LANGUAGES:
+    if type_ not in KINDS or lang not in LANGUAGES:
         return {"metas": []}
     args = {k: v[0] for k, v in parse_qs(extra).items()}
     platform = args.get("genre")
     if platform and platform not in PLATFORMS:
         return {"metas": []}
     skip = int(args.get("skip", 0) or 0)
-    metas = await build_catalog(lang, platform, skip)
+    metas = await build_catalog(type_, lang, platform, skip)
     return {"metas": metas, "cacheMaxAge": CATALOG_TTL}
 
 
 @app.get("/meta/{type_}/{meta_id}.json")
 async def meta(type_: str, meta_id: str):
-    """Only used for movies without an IMDb id (ids like tmdb:12345)."""
-    if type_ != "movie" or not meta_id.startswith("tmdb:"):
+    """Only used for titles without an IMDb id (ids like tmdb:12345)."""
+    if type_ not in KINDS or not meta_id.startswith("tmdb:"):
         return {"meta": None}
     try:
-        detail = await movie_detail(int(meta_id.split(":", 1)[1]))
+        detail = await title_detail(type_, int(meta_id.split(":")[1]))
     except ValueError:
         return {"meta": None}
-    return {"meta": to_meta(detail), "cacheMaxAge": DETAIL_TTL}
+    result = to_meta(detail, type_)
+    if type_ == "series":
+        result["videos"] = await episode_list(detail)
+    return {"meta": result, "cacheMaxAge": DETAIL_TTL}

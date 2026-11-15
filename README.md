@@ -1,4 +1,4 @@
-# Indian OTT – New Hindi & Marathi Movies (Stremio add-on)
+# Indian OTT – New Hindi & Marathi Movies & Series (Stremio add-on)
 
 A Stremio **catalog** add-on. It lists recently released Hindi and Marathi
 movies streaming in India on Netflix, Prime Video, ZEE5, SonyLIV and
@@ -29,8 +29,8 @@ Use `TMDB_BEARER_TOKEN` instead of `TMDB_API_KEY` if you have the long
 
 ## What you get
 
-- Two catalogs in Discover → Movies: **New Hindi Movies on OTT** and
-  **New Marathi Movies on OTT**.
+- Four catalogs in Discover: **New Hindi/Marathi Movies on OTT** (Movies) and
+  **New Hindi/Marathi Series on OTT** (Series).
 - The genre dropdown filters by platform.
 - Each description starts with "Streaming on: …".
 
