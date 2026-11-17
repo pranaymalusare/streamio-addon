@@ -24,7 +24,8 @@ from datetime import date, timedelta
 from urllib.parse import parse_qs
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # --------------------------------------------------------------------------
@@ -83,7 +84,7 @@ ALL_GENRES = "All genres"
 
 MANIFEST = {
     "id": "community.indian-ott-recent",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "name": "Indian OTT - New Hindi & Marathi Movies & Series",
     "description": (
         "Recently released Hindi and Marathi movies and series streaming in India on "
@@ -326,7 +327,23 @@ async def build_must_watch(genre: str | None, skip: int) -> list[dict]:
 # --------------------------------------------------------------------------
 # Stremio routes
 # --------------------------------------------------------------------------
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    """Landing page. Stremio itself must be given the /manifest.json address."""
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{MANIFEST["name"]}</title></head>
+<body style="font-family:sans-serif;max-width:640px;margin:48px auto;padding:0 16px">
+<h2>{MANIFEST["name"]}</h2>
+<p>{MANIFEST["description"]}</p>
+<p><a href="stremio://{host}/manifest.json">Install in Stremio</a></p>
+<p>Or paste this address into the Stremio add-on search box:</p>
+<pre>{scheme}://{host}/manifest.json</pre>
+</body></html>"""
+
+
 @app.get("/manifest.json")
 async def manifest():
     return MANIFEST
