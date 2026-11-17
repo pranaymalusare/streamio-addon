@@ -42,6 +42,17 @@ Use `TMDB_BEARER_TOKEN` instead of `TMDB_API_KEY` if you have the long
   - Default view: Comedy, Thriller, Mystery and Crime. The genre dropdown
     switches to one genre or to "All genres".
 
+- A sixth catalog: **What is India Watching**. Movies and series together,
+  any language. It takes the 5 most popular titles from Netflix, then Prime
+  Video, SonyLIV, ZEE5 and JioHotstar, then the next 5 from each, up to 50.
+  Popularity is TMDB's score for titles available on each platform in India;
+  it is not the platforms' own Top 10 charts.
+
+## When the data updates
+
+- Catalog pages are cached for 1 hour (`CATALOG_TTL`); title details for 24.
+- TMDB refreshes streaming availability from JustWatch about once a day.
+
 ## Settings (environment variables)
 
 | Variable      | Default | Meaning                               |
