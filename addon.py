@@ -82,15 +82,9 @@ GENRES = {
 PREFERRED_GENRES = ["Comedy", "Thriller", "Mystery", "Crime"]
 ALL_GENRES = "All genres"
 
-# ---- "What is India Watching": popular now, movies + series, any language --
-TRENDING_ID = "in-trending"
-TRENDING_ORDER = ["Netflix", "Prime Video", "SonyLIV", "ZEE5", "JioHotstar"]
-TRENDING_PER_TURN = 5     # titles taken from each platform per round
-TRENDING_TOTAL = 50       # stop once the list has this many titles
-
 MANIFEST = {
     "id": "community.indian-ott-recent",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "name": "Indian OTT - New Hindi & Marathi Movies & Series",
     "description": (
         "Recently released Hindi and Marathi movies and series streaming in India on "
@@ -124,13 +118,7 @@ MANIFEST = {
                 {"name": "genre", "options": [ALL_GENRES, *GENRES], "isRequired": False},
                 {"name": "skip", "isRequired": False},
             ],
-        },
-        {
-            # Listed under movies, but the items are movies and series mixed.
-            "type": "movie",
-            "id": TRENDING_ID,
-            "name": "What is India Watching",
-        },
+        }
     ],
     "behaviorHints": {"configurable": False},
 }
@@ -336,50 +324,6 @@ async def build_must_watch(genre: str | None, skip: int) -> list[dict]:
     return [to_meta(d, "movie") for d in details if isinstance(d, dict)]
 
 
-async def popular_on_platform(platform: str) -> list[dict]:
-    """Movies and series on one platform in India, most popular first."""
-    async def fetch(type_: str) -> list[dict]:
-        page = await tmdb_get(
-            f"/discover/{KINDS[type_]['path']}", CATALOG_TTL,
-            watch_region=REGION,
-            with_watch_providers="|".join(map(str, PLATFORMS[platform])),
-            with_watch_monetization_types="flatrate|free|ads",
-            sort_by="popularity.desc",
-            include_adult="false",
-            page=1,
-        )
-        return [{"type": type_, "id": m["id"], "popularity": m.get("popularity", 0)}
-                for m in page.get("results", [])]
-
-    groups = await asyncio.gather(fetch("movie"), fetch("series"))
-    return sorted(groups[0] + groups[1], key=lambda t: -t["popularity"])
-
-
-async def build_trending() -> list[dict]:
-    """Top 5 per platform in turn (Netflix, Prime Video, ...) until 50 titles."""
-    results = await asyncio.gather(*(popular_on_platform(p) for p in TRENDING_ORDER),
-                                   return_exceptions=True)
-    queues = [r if isinstance(r, list) else [] for r in results]
-    if not any(queues):
-        for r in results:
-            if isinstance(r, Exception):
-                raise r
-    picked, seen = [], set()
-    while len(picked) < TRENDING_TOTAL and any(queues):
-        for queue in queues:                       # one turn per platform
-            taken = 0
-            while queue and taken < TRENDING_PER_TURN and len(picked) < TRENDING_TOTAL:
-                title = queue.pop(0)
-                key = (title["type"], title["id"])
-                if key not in seen:                # same title on two platforms
-                    seen.add(key)
-                    picked.append(title)
-                    taken += 1
-    details = await asyncio.gather(
-        *(title_detail(t["type"], t["id"]) for t in picked), return_exceptions=True)
-    return [to_meta(d, t["type"]) for d, t in zip(details, picked) if isinstance(d, dict)]
-
-
 # --------------------------------------------------------------------------
 # Stremio routes
 # --------------------------------------------------------------------------
@@ -415,10 +359,6 @@ async def catalog(type_: str, catalog_id: str, extra: str = ""):
             return {"metas": []}
         metas = await build_must_watch(genre, int(args.get("skip", 0) or 0))
         return {"metas": metas, "cacheMaxAge": CATALOG_TTL}
-    if catalog_id == TRENDING_ID:
-        if type_ != "movie" or args.get("skip"):    # the whole list is one page
-            return {"metas": []}
-        return {"metas": await build_trending(), "cacheMaxAge": CATALOG_TTL}
     lang = catalog_id.removesuffix("-recent")
     if type_ not in KINDS or lang not in LANGUAGES:
         return {"metas": []}
